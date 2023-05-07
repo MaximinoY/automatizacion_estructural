@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 N = 1
 m = 1
 cm = m/100
+mm=m/1000
 Pa = 1
 MPa = 10**6*Pa
 pulg = 2.54 *m / 100
@@ -86,7 +87,12 @@ class Concrete():
 
     def nominal_punch_shear(self,punch_perim,phi_s=0.85):
         fc = self.fc
-        self.Vn_p=0.33*(fc/MPa)**0.5*punch_perim*self.d*MPa
+        beta_punch=self.h_col/self.b_col
+        alpha_s=40
+        self.Vn_p_1=0.17*(1+2/beta_punch)*(fc/MPa)**0.5*punch_perim*self.d*MPa
+        self.Vn_p_2=0.083*(alpha_s*self.d/punch_perim+2)*(fc/MPa)**0.5*punch_perim*self.d*MPa
+        self.Vn_p_3=0.33*(fc/MPa)**0.5*punch_perim*self.d*MPa
+        self.Vn_p=min(self.Vn_p_1,self.Vn_p_2,self.Vn_p_3)
         self.phi_Vn_p = self.Vn_p*phi_s 
     
     
@@ -105,37 +111,45 @@ class Concrete():
         else:
             return fs    
         
-    def des_long(self,db,lamb=1,psi_g=1,psi_e=1,psi_s=0.8,psi_t=1):
+    def des_long(self,db,lamb=1,psi_g=1,psi_e=1,psi_s=0.8,psi_t=1,gancho=False):
         psi_t_e = psi_t*psi_e
         if psi_t_e > 1.7:
             psi_t_e = 1.7
-            
+        
         sqrt_fc = (self.fc/10**6)**0.5*MPa
         if sqrt_fc > 8.3*MPa:
            sqrt_fc = 8.3*MPa
-            
-        ld = self.fy/(1.1*lamb*sqrt_fc)*psi_g*psi_e*psi_s*psi_g*db
         
-        #efecto de los estribos
-        r = self.r
-        d_st = self.d_st
-        nb = self.n_c
-        b = self.b
+        if gancho==False:
+            ld = self.fy/(1.1*lamb*sqrt_fc)*psi_g*psi_e*psi_s*psi_g*db
+            
+            #efecto de los estribos
+            r = self.r
+            d_st = self.d_st
+            nb = self.n_c
+            b = self.b
 
-        cb1 = r+d_st+db*0.5
-        cb2 = (b-2*r-2*d_st-db)/(nb-1)/2
-        cb = min(cb1,cb2)
+            cb1 = r+d_st+db*0.5
+            cb2 = (b-2*r-2*d_st-db)/(nb-1)/2
+            cb = min(cb1,cb2)
 
-        k_tr = 0
+            k_tr = 0
 
-        #restricciones de la norma
-        alpha = (cb+k_tr)/db
-        if alpha > 2.5:
-            alpha = 2.5
+            #restricciones de la norma
+            alpha = (cb+k_tr)/db
+            if alpha > 2.5:
+                alpha = 2.5
+            ld=ld/alpha
 
-        return ld/alpha 
+            if ld<0.3*m:
+                ld=0.3*m
 
-
+            return ld
+        else: 
+            ld=0.24*psi_e*lamb*self.fy/sqrt_fc*db
+            if ld<0.3*m:
+                ld=0.3*m
+            return ld
     
 class Beam(Concrete):
     def __init__(self,b,h,r):
@@ -696,13 +710,18 @@ class Isolate_footing(Foundation):
     -------
     None.
     '''
-    def __init__(self,dim1_col,dim2_col,df,h,b=1*m,r=0.01*m,gamma_c=2.4*9.81):
+    def __init__(self,dim1_col,dim2_col,df,h=0.40*m,b=1*m,r=0.1*m,gamma_c=2.4*tonf/m**3,db_col=0):
         
         self.b_col = min(dim1_col,dim2_col)
         self.h_col=max(dim1_col,dim2_col)
         self.df = df
         
         super().__init__(b,h=h,r=r,gamma_c=gamma_c)
+        if db_col<=0:
+            pass
+        else:
+            #predimensionamiento del peralte en base a la longitud de desarrollo de gancho a traccion de columna.
+            self.h=round(math.ceil((super().des_long(db_col,gancho=True)+self.r)/0.05)*0.05,2)
         
         #PREDIMENSIONAMIENTO:
         B=round(4*self.b_col,2)
@@ -712,14 +731,20 @@ class Isolate_footing(Foundation):
         
 
 
-    def assign_forces(self,forces):
+    def assign_forces(self,fzas,sc_floor=200*kgf/m**2,PE_acab=2000*kgf/m**3,floor_h=0.20*m):
         '''
         Fuerzas : Lista de cargas que llegan de la columna
-        [Fz,Mx,My] para cada tipo de carga: D,L,Sx,Sy,Vx,Vy 
+        [Fz,Mx,My] para cada tipo de carga: D,L,Sx,Sy,Vx,Vy
         '''
+        forces=[]
+        for i in fzas:
+            forces.append(fzas[i])
         forces.append([0,0,0])
         self.forces=np.array(forces)
-
+        self.sc_floor=sc_floor
+        self.PE_acab=PE_acab
+        #altura de piso+contrapiso+acabado
+        self.floor_h=floor_h
         #Definiendo la matriz de combinación
         #[D,L,SX,SY,VX,VY,PP]#POSIBILIDAD DE AUMENTAR LOS CASOS NEGATIVOS DE SISMO Y VIENTO
         Comb=[[1,1,0,0,0,0,1],
@@ -745,8 +770,10 @@ class Isolate_footing(Foundation):
         #Peso del terreno y zapata:
         w_soil=self.soil.gamma_s*(self.B*self.L-self.b_col*self.h_col)*(self.df-self.h)
         w_col=self.gamma_c*(self.b_col*self.h_col)*(self.df-self.h)
+        w_acab=self.B*self.L*self.floor_h*self.PE_acab
+        w_sc_floor=self.sc_floor*self.B*self.L
         w_p=self.gamma_c*(self.B*self.L)*self.h
-        self.forces[-1][0]  = w_soil+w_col+w_p
+        self.forces[-1][0]  = w_soil+w_col+w_p+w_acab+w_sc_floor
 
 
     def set_foot_dimensions(self,B,L):
