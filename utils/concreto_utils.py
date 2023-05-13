@@ -681,7 +681,7 @@ class Soil():
     def __init__(self,q_adm,gamma_s):
         self.q_adm = q_adm
         self.gamma_s = gamma_s
- 
+
 class Foundation(Concrete):
     '''
     Clase general de diseño de cimentaciones
@@ -694,7 +694,7 @@ class Foundation(Concrete):
         Df : Profundidad de desplante
         '''
         self.soil = Soil(q_adm,gamma_s)
-        
+
 
 class Isolate_footing(Foundation):
     '''
